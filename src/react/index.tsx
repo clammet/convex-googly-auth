@@ -199,6 +199,14 @@ export function createGooglyAuthClient(config: GooglyAuthClientConfig) {
           typeof value.idToken === "string" &&
           validateGoogleJwt(value.idToken)
         ) {
+          // The refresh route rotates the session token; store the
+          // replacement or the retired one dies after its grace window.
+          if (
+            "sessionToken" in value &&
+            typeof value.sessionToken === "string"
+          ) {
+            localStorage.setItem(SESSION_KEY, value.sessionToken);
+          }
           localStorage.setItem(TOKEN_KEY, value.idToken);
           return value.idToken;
         }

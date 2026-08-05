@@ -23,19 +23,20 @@ import {
   base64UrlToBytes,
   hashAnonymousClaim,
   isValidAnonymousClaim,
-  SESSION_ABSOLUTE_TTL_MS,
-  SESSION_IDLE_TTL_MS,
+  DEFAULT_SESSION_ABSOLUTE_TTL_MS,
+  DEFAULT_SESSION_IDLE_TTL_MS,
 } from "../component/shared.js";
 import {
   createGoogleOAuthState,
   isValidGoogleOAuthState,
   verifyGoogleOAuthState,
 } from "./googleOAuthState.js";
+import type { GoogleOAuthState } from "./googleOAuthState.js";
 
 export {
   isValidAnonymousClaim,
-  SESSION_ABSOLUTE_TTL_MS,
-  SESSION_IDLE_TTL_MS,
+  DEFAULT_SESSION_ABSOLUTE_TTL_MS,
+  DEFAULT_SESSION_IDLE_TTL_MS,
 };
 export type { ComponentApi };
 
@@ -56,6 +57,17 @@ export interface GooglyAuthOptions {
    * Defaults to true.
    */
   anonymous?: boolean;
+  /**
+   * Sliding idle window: a session ends after this long without a refresh,
+   * i.e. without the user opening the app. Defaults to 60 days.
+   */
+  sessionIdleTtlMs?: number;
+  /**
+   * Hard cap on a session's lifetime from creation, regardless of activity.
+   * Defaults to 180 days — Google refresh tokens expire after ~6 months of
+   * disuse anyway, so longer values buy nothing.
+   */
+  sessionAbsoluteTtlMs?: number;
 }
 
 export interface EnsureIdentityResult {
@@ -254,6 +266,14 @@ export class GooglyAuth {
     return this.options.anonymous !== false;
   }
 
+  get sessionIdleTtlMs(): number {
+    return this.options.sessionIdleTtlMs ?? DEFAULT_SESSION_IDLE_TTL_MS;
+  }
+
+  get sessionAbsoluteTtlMs(): number {
+    return this.options.sessionAbsoluteTtlMs ?? DEFAULT_SESSION_ABSOLUTE_TTL_MS;
+  }
+
   /**
    * Resolve the caller to an identity id, or null when unauthenticated.
    * A verified Google identity always wins; the anonymous claim is only
@@ -338,6 +358,8 @@ export class GooglyAuth {
     const component = this.component;
     const pathPrefix = normalizePathPrefix(opts.pathPrefix ?? "/auth/");
     const namespace = opts.signingNamespace ?? "googly-auth";
+    const idleTtlMs = this.sessionIdleTtlMs;
+    const absoluteTtlMs = this.sessionAbsoluteTtlMs;
 
     const config = () => {
       const googleClientId = opts.googleClientId ?? process.env.AUTH_GOOGLE_ID;
@@ -408,6 +430,36 @@ export class GooglyAuth {
       };
     };
 
+    const googleAuthorizationRedirect = async (
+      requestUrl: string,
+      googleClientId: string,
+      googleClientSecret: string,
+      state: GoogleOAuthState,
+      prompt: "select_account" | "consent",
+    ): Promise<Response> => {
+      const authorizationUrl = new URL(
+        "https://accounts.google.com/o/oauth2/v2/auth",
+      );
+      authorizationUrl.searchParams.set("client_id", googleClientId);
+      authorizationUrl.searchParams.set(
+        "redirect_uri",
+        oauthCallbackUrl(requestUrl, pathPrefix),
+      );
+      authorizationUrl.searchParams.set("response_type", "code");
+      authorizationUrl.searchParams.set("scope", "openid profile email");
+      authorizationUrl.searchParams.set(
+        "state",
+        await createGoogleOAuthState(googleClientSecret, namespace, state),
+      );
+      authorizationUrl.searchParams.set("nonce", state.nonce);
+      authorizationUrl.searchParams.set("access_type", "offline");
+      authorizationUrl.searchParams.set("prompt", prompt);
+      return new Response(null, {
+        status: 302,
+        headers: { Location: authorizationUrl.toString() },
+      });
+    };
+
     http.route({
       path: `${pathPrefix}google/start`,
       method: "GET",
@@ -428,28 +480,16 @@ export class GooglyAuth {
           });
         }
 
-        const authorizationUrl = new URL(
-          "https://accounts.google.com/o/oauth2/v2/auth",
+        // select_account keeps returning users to a fast account-picker
+        // bounce. The callback re-runs the flow with prompt=consent only
+        // when a refresh token is needed and none is stored.
+        return await googleAuthorizationRedirect(
+          request.url,
+          googleClientId,
+          googleClientSecret,
+          stateInput,
+          "select_account",
         );
-        authorizationUrl.searchParams.set("client_id", googleClientId);
-        authorizationUrl.searchParams.set(
-          "redirect_uri",
-          oauthCallbackUrl(request.url, pathPrefix),
-        );
-        authorizationUrl.searchParams.set("response_type", "code");
-        authorizationUrl.searchParams.set("scope", "openid profile email");
-        authorizationUrl.searchParams.set(
-          "state",
-          await createGoogleOAuthState(googleClientSecret, namespace, stateInput),
-        );
-        authorizationUrl.searchParams.set("nonce", stateInput.nonce);
-        authorizationUrl.searchParams.set("access_type", "offline");
-        authorizationUrl.searchParams.set("prompt", "consent");
-
-        return new Response(null, {
-          status: 302,
-          headers: { Location: authorizationUrl.toString() },
-        });
       }),
     });
 
@@ -531,9 +571,22 @@ export class GooglyAuth {
         if (refreshToken === null) {
           const existing = await ctx.runQuery(
             component.lib.latestRefreshTokenForSubject,
-            { googleSubject, now },
+            { googleSubject, now, idleTtlMs },
           );
           refreshToken = existing?.refreshToken ?? null;
+        }
+        if (refreshToken === null && verifiedState.consented !== true) {
+          // Google only hands out a refresh token on a consent prompt. No
+          // token came back and none is stored, so bounce through Google once
+          // more with prompt=consent; the flag in the re-signed state stops
+          // this from looping if Google still withholds one.
+          return await googleAuthorizationRedirect(
+            request.url,
+            googleClientId,
+            googleClientSecret,
+            { ...verifiedState, consented: true },
+            "consent",
+          );
         }
         const fragment = new URLSearchParams({
           token: tokenValue.id_token,
@@ -546,6 +599,7 @@ export class GooglyAuth {
             refreshToken,
             googleSubject,
             now,
+            absoluteTtlMs,
           });
           fragment.set(
             "session",
@@ -587,6 +641,7 @@ export class GooglyAuth {
         const session = await ctx.runQuery(component.lib.getActiveSession, {
           sessionToken: unsignedToken,
           now,
+          idleTtlMs,
         });
         if (
           session === null ||
@@ -615,6 +670,7 @@ export class GooglyAuth {
         if (!tokenResponse.ok) {
           await ctx.runMutation(component.lib.removeSession, {
             sessionToken: unsignedToken,
+            now,
           });
           return authJson({ error: "Refresh failed" }, 401, headers);
         }
@@ -631,11 +687,31 @@ export class GooglyAuth {
             headers,
           );
         }
-        await ctx.runMutation(component.lib.touchSession, {
+        // Rotate the session token on every refresh so an exfiltrated token
+        // goes stale on the holder's next refresh instead of living out the
+        // session's full TTL.
+        const rotated = await ctx.runMutation(component.lib.rotateSession, {
           sessionToken: unsignedToken,
+          newSessionToken: crypto.randomUUID(),
           now,
+          idleTtlMs,
         });
-        return authJson({ idToken: tokenValue.id_token }, 200, headers);
+        if (rotated === null) {
+          return authJson({ error: "Invalid session" }, 401, headers);
+        }
+        return authJson(
+          {
+            idToken: tokenValue.id_token,
+            sessionToken: await signSessionToken(
+              googleClientSecret,
+              namespace,
+              rotated.sessionToken,
+              session.googleSubject,
+            ),
+          },
+          200,
+          headers,
+        );
       }),
     });
 
@@ -656,9 +732,11 @@ export class GooglyAuth {
         const separator = body.sessionToken.indexOf(".");
         if (separator > 0) {
           const unsignedToken = body.sessionToken.slice(0, separator);
+          const now = Date.now();
           const session = await ctx.runQuery(component.lib.getActiveSession, {
             sessionToken: unsignedToken,
-            now: Date.now(),
+            now,
+            idleTtlMs,
           });
           if (
             session !== null &&
@@ -671,6 +749,7 @@ export class GooglyAuth {
           ) {
             const removed = await ctx.runMutation(component.lib.removeSession, {
               sessionToken: unsignedToken,
+              now,
             });
             if (
               opts.revokeRefreshTokenOnSignOut === true &&

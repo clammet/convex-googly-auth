@@ -45,8 +45,14 @@ export default defineSchema({
     createdAt: v.number(),
     expiresAt: v.number(),
     lastUsedAt: v.number(),
+    // Every refresh rotates the session token, shrinking the window in which
+    // an exfiltrated (e.g. via XSS) token stays useful. The retired token is
+    // honored briefly so a racing refresh from another tab is not signed out.
+    previousSessionToken: v.optional(v.string()),
+    rotatedAt: v.optional(v.number()),
   })
     .index("by_sessionToken", ["sessionToken"])
+    .index("by_previousSessionToken", ["previousSessionToken"])
     .index("by_googleSubject", ["googleSubject"])
     .index("by_expiresAt", ["expiresAt"]),
 });

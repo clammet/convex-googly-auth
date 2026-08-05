@@ -10,6 +10,12 @@ export interface GoogleOAuthState {
   nonce: string;
   origin: string;
   redirect: string;
+  /**
+   * Set server-side when the callback has already bounced the user back
+   * through Google with `prompt=consent` to obtain a refresh token. Stops
+   * the callback from retrying more than once.
+   */
+  consented?: boolean;
 }
 
 function isCanonicalOrigin(value: string): boolean {
@@ -46,11 +52,15 @@ export function isValidGoogleOAuthState(state: GoogleOAuthState): boolean {
 }
 
 function serializeUnsignedState(state: GoogleOAuthState): string {
-  return new URLSearchParams({
+  const params = new URLSearchParams({
     nonce: state.nonce,
     origin: state.origin,
     redirect: state.redirect,
-  }).toString();
+  });
+  if (state.consented === true) {
+    params.set("consented", "1");
+  }
+  return params.toString();
 }
 
 async function getStateSigningKey(
@@ -107,31 +117,32 @@ export async function verifyGoogleOAuthState(
   }
   const params = new URLSearchParams(serialized);
   const entries = [...params.entries()];
-  if (
-    entries.length !== 4 ||
-    entries.some(
-      ([name]) =>
-        name !== "nonce" &&
-        name !== "origin" &&
-        name !== "redirect" &&
-        name !== "signature",
-    )
-  ) {
-    return null;
+  const allowed = ["nonce", "origin", "redirect", "signature", "consented"];
+  const seen = new Set<string>();
+  for (const [name] of entries) {
+    if (!allowed.includes(name) || seen.has(name)) {
+      return null;
+    }
+    seen.add(name);
   }
   const nonce = params.get("nonce");
   const origin = params.get("origin");
   const redirect = params.get("redirect");
   const encodedSignature = params.get("signature");
+  const consented = params.get("consented");
   if (
     nonce === null ||
     origin === null ||
     redirect === null ||
-    encodedSignature === null
+    encodedSignature === null ||
+    (consented !== null && consented !== "1")
   ) {
     return null;
   }
-  const state = { nonce, origin, redirect };
+  const state: GoogleOAuthState =
+    consented === "1"
+      ? { nonce, origin, redirect, consented: true }
+      : { nonce, origin, redirect };
   if (!isValidGoogleOAuthState(state)) {
     return null;
   }

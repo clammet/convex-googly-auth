@@ -3,7 +3,11 @@ import { mutation, query } from "./_generated/server.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { api } from "./_generated/api.js";
-import { isSessionExpired, SESSION_ABSOLUTE_TTL_MS } from "./shared.js";
+import {
+  DEFAULT_SESSION_ABSOLUTE_TTL_MS,
+  isSessionExpired,
+  SESSION_ROTATION_GRACE_MS,
+} from "./shared.js";
 
 const CLEANUP_BATCH_SIZE = 256;
 
@@ -219,6 +223,7 @@ export const createSession = mutation({
     refreshToken: v.string(),
     googleSubject: v.string(),
     now: v.number(),
+    absoluteTtlMs: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -227,12 +232,46 @@ export const createSession = mutation({
       refreshToken: args.refreshToken,
       googleSubject: args.googleSubject,
       createdAt: args.now,
-      expiresAt: args.now + SESSION_ABSOLUTE_TTL_MS,
+      expiresAt:
+        args.now + (args.absoluteTtlMs ?? DEFAULT_SESSION_ABSOLUTE_TTL_MS),
       lastUsedAt: args.now,
     });
     return null;
   },
 });
+
+/**
+ * Find a session by its current token, or by its just-rotated-out previous
+ * token while the rotation grace window is open. The grace path keeps a
+ * refresh that raced a rotation (another tab) from being treated as invalid.
+ */
+async function sessionByPresentedToken(
+  ctx: QueryCtx,
+  presentedToken: string,
+  now: number,
+): Promise<Doc<"authSessions"> | null> {
+  const current = await ctx.db
+    .query("authSessions")
+    .withIndex("by_sessionToken", (q) => q.eq("sessionToken", presentedToken))
+    .unique();
+  if (current !== null) {
+    return current;
+  }
+  const rotated = await ctx.db
+    .query("authSessions")
+    .withIndex("by_previousSessionToken", (q) =>
+      q.eq("previousSessionToken", presentedToken),
+    )
+    .unique();
+  if (
+    rotated === null ||
+    rotated.rotatedAt === undefined ||
+    now >= rotated.rotatedAt + SESSION_ROTATION_GRACE_MS
+  ) {
+    return null;
+  }
+  return rotated;
+}
 
 const activeSessionValidator = v.union(
   v.object({
@@ -243,16 +282,19 @@ const activeSessionValidator = v.union(
 );
 
 export const getActiveSession = query({
-  args: { sessionToken: v.string(), now: v.number() },
+  args: {
+    sessionToken: v.string(),
+    now: v.number(),
+    idleTtlMs: v.optional(v.number()),
+  },
   returns: activeSessionValidator,
   handler: async (ctx, args) => {
-    const session = await ctx.db
-      .query("authSessions")
-      .withIndex("by_sessionToken", (q) =>
-        q.eq("sessionToken", args.sessionToken),
-      )
-      .unique();
-    if (session === null || isSessionExpired(session, args.now)) {
+    const session = await sessionByPresentedToken(
+      ctx,
+      args.sessionToken,
+      args.now,
+    );
+    if (session === null || isSessionExpired(session, args.now, args.idleTtlMs)) {
       return null;
     }
     return {
@@ -262,38 +304,59 @@ export const getActiveSession = query({
   },
 });
 
-export const touchSession = mutation({
-  args: { sessionToken: v.string(), now: v.number() },
-  returns: v.boolean(),
+/**
+ * Slide the idle window and rotate the session token. Presenting the current
+ * token installs `newSessionToken`; presenting the just-retired previous
+ * token (a refresh that raced a rotation) only touches the session and hands
+ * back the already-current token. Returns the token that is now current, or
+ * null when the session is unknown or expired.
+ */
+export const rotateSession = mutation({
+  args: {
+    sessionToken: v.string(),
+    newSessionToken: v.string(),
+    now: v.number(),
+    idleTtlMs: v.optional(v.number()),
+  },
+  returns: v.union(v.object({ sessionToken: v.string() }), v.null()),
   handler: async (ctx, args) => {
-    const session = await ctx.db
-      .query("authSessions")
-      .withIndex("by_sessionToken", (q) =>
-        q.eq("sessionToken", args.sessionToken),
-      )
-      .unique();
+    const session = await sessionByPresentedToken(
+      ctx,
+      args.sessionToken,
+      args.now,
+    );
     if (session === null) {
-      return false;
+      return null;
     }
-    if (isSessionExpired(session, args.now)) {
+    if (isSessionExpired(session, args.now, args.idleTtlMs)) {
       await ctx.db.delete("authSessions", session._id);
-      return false;
+      return null;
     }
-    await ctx.db.patch("authSessions", session._id, { lastUsedAt: args.now });
-    return true;
+    if (session.sessionToken !== args.sessionToken) {
+      await ctx.db.patch("authSessions", session._id, {
+        lastUsedAt: args.now,
+      });
+      return { sessionToken: session.sessionToken };
+    }
+    await ctx.db.patch("authSessions", session._id, {
+      sessionToken: args.newSessionToken,
+      previousSessionToken: session.sessionToken,
+      rotatedAt: args.now,
+      lastUsedAt: args.now,
+    });
+    return { sessionToken: args.newSessionToken };
   },
 });
 
 export const removeSession = mutation({
-  args: { sessionToken: v.string() },
+  args: { sessionToken: v.string(), now: v.number() },
   returns: v.union(v.object({ refreshToken: v.string() }), v.null()),
   handler: async (ctx, args) => {
-    const session = await ctx.db
-      .query("authSessions")
-      .withIndex("by_sessionToken", (q) =>
-        q.eq("sessionToken", args.sessionToken),
-      )
-      .unique();
+    const session = await sessionByPresentedToken(
+      ctx,
+      args.sessionToken,
+      args.now,
+    );
     if (session === null) {
       return null;
     }
@@ -307,7 +370,11 @@ export const removeSession = mutation({
  * reuse the newest live session's refresh token for their new session.
  */
 export const latestRefreshTokenForSubject = query({
-  args: { googleSubject: v.string(), now: v.number() },
+  args: {
+    googleSubject: v.string(),
+    now: v.number(),
+    idleTtlMs: v.optional(v.number()),
+  },
   returns: v.union(v.object({ refreshToken: v.string() }), v.null()),
   handler: async (ctx, args) => {
     const sessions = ctx.db
@@ -318,7 +385,7 @@ export const latestRefreshTokenForSubject = query({
       .order("desc");
     let inspected = 0;
     for await (const session of sessions) {
-      if (!isSessionExpired(session, args.now)) {
+      if (!isSessionExpired(session, args.now, args.idleTtlMs)) {
         return { refreshToken: session.refreshToken };
       }
       inspected += 1;

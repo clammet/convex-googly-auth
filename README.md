@@ -12,8 +12,13 @@ anonymous-credential-hijacking bug class fixed structurally, in one place.
   audience, and signature via the app's `convex/auth.config.ts`. Refresh
   tokens never leave the component's `authSessions` table — the browser only
   holds an opaque HMAC-signed session token and exchanges it for fresh ID
-  tokens through the refresh route. Sessions expire after 30 days absolute /
-  7 days idle.
+  tokens through the refresh route. Every refresh rotates the session token
+  (with a short grace window for racing tabs), so an exfiltrated token goes
+  stale on the next refresh. Sessions expire after 180 days absolute /
+  60 days idle by default; configure via `sessionAbsoluteTtlMs` /
+  `sessionIdleTtlMs` on `new GooglyAuth(...)`. Sign-in uses
+  `prompt=select_account`; the callback re-runs the flow with
+  `prompt=consent` only when a refresh token is needed and none is stored.
 - **Anonymous users (optional).** Identified by a 256-bit hex claim in a
   cookie. The claim is a bearer secret; only its SHA-256 hash is stored.
 - **Structural hijack prevention.** Credentials live in their own tables

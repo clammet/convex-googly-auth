@@ -4,8 +4,9 @@ import { api } from "./_generated/api.js";
 import { initConvexTest } from "./setup.test.js";
 import {
   isSessionExpired,
-  SESSION_ABSOLUTE_TTL_MS,
-  SESSION_IDLE_TTL_MS,
+  DEFAULT_SESSION_ABSOLUTE_TTL_MS,
+  DEFAULT_SESSION_IDLE_TTL_MS,
+  SESSION_ROTATION_GRACE_MS,
   sha256,
 } from "./shared.js";
 
@@ -136,25 +137,37 @@ describe("identity transitions", () => {
 });
 
 describe("session lifetime", () => {
-  const base = { createdAt: NOW, lastUsedAt: NOW, expiresAt: NOW + SESSION_ABSOLUTE_TTL_MS };
+  const base = { lastUsedAt: NOW, expiresAt: NOW + DEFAULT_SESSION_ABSOLUTE_TTL_MS };
 
   it("expires at the absolute deadline even while in active use", () => {
     const session = {
       ...base,
-      lastUsedAt: NOW + SESSION_ABSOLUTE_TTL_MS - 1000,
+      lastUsedAt: NOW + DEFAULT_SESSION_ABSOLUTE_TTL_MS - 1000,
     };
-    expect(isSessionExpired(session, NOW + SESSION_ABSOLUTE_TTL_MS - 1)).toBe(
-      false,
-    );
-    expect(isSessionExpired(session, NOW + SESSION_ABSOLUTE_TTL_MS)).toBe(true);
+    expect(
+      isSessionExpired(session, NOW + DEFAULT_SESSION_ABSOLUTE_TTL_MS - 1),
+    ).toBe(false);
+    expect(
+      isSessionExpired(session, NOW + DEFAULT_SESSION_ABSOLUTE_TTL_MS),
+    ).toBe(true);
   });
 
   it("expires after the idle window despite a distant absolute deadline", () => {
-    expect(isSessionExpired(base, NOW + SESSION_IDLE_TTL_MS - 1)).toBe(false);
-    expect(isSessionExpired(base, NOW + SESSION_IDLE_TTL_MS)).toBe(true);
+    expect(isSessionExpired(base, NOW + DEFAULT_SESSION_IDLE_TTL_MS - 1)).toBe(
+      false,
+    );
+    expect(isSessionExpired(base, NOW + DEFAULT_SESSION_IDLE_TTL_MS)).toBe(
+      true,
+    );
   });
 
-  it("stores, touches, and removes sessions", async () => {
+  it("honors a custom idle window", () => {
+    const hour = 60 * 60 * 1000;
+    expect(isSessionExpired(base, NOW + hour - 1, hour)).toBe(false);
+    expect(isSessionExpired(base, NOW + hour, hour)).toBe(true);
+  });
+
+  it("stores, rotates, and removes sessions", async () => {
     const t = initConvexTest();
     await t.mutation(api.lib.createSession, {
       sessionToken: "session-1",
@@ -170,34 +183,83 @@ describe("session lifetime", () => {
       }),
     ).toEqual({ googleSubject: "google|alice", refreshToken: "refresh-1" });
 
-    // Touching within the idle window extends it.
-    const midway = NOW + SESSION_IDLE_TTL_MS - 1000;
+    // Rotating within the idle window slides it and installs the new token.
+    const midway = NOW + DEFAULT_SESSION_IDLE_TTL_MS - 1000;
     expect(
-      await t.mutation(api.lib.touchSession, {
+      await t.mutation(api.lib.rotateSession, {
         sessionToken: "session-1",
+        newSessionToken: "session-1b",
         now: midway,
       }),
-    ).toBe(true);
+    ).toEqual({ sessionToken: "session-1b" });
     expect(
       await t.query(api.lib.getActiveSession, {
-        sessionToken: "session-1",
-        now: midway + SESSION_IDLE_TTL_MS - 1000,
+        sessionToken: "session-1b",
+        now: midway + DEFAULT_SESSION_IDLE_TTL_MS - 1000,
       }),
     ).not.toBeNull();
 
     const removed = await t.mutation(api.lib.removeSession, {
-      sessionToken: "session-1",
+      sessionToken: "session-1b",
+      now: midway,
     });
     expect(removed).toEqual({ refreshToken: "refresh-1" });
     expect(
       await t.query(api.lib.getActiveSession, {
-        sessionToken: "session-1",
-        now: NOW,
+        sessionToken: "session-1b",
+        now: midway,
       }),
     ).toBeNull();
   });
 
-  it("refuses and deletes an idle-expired session on touch", async () => {
+  it("honors the retired token only within the rotation grace window", async () => {
+    const t = initConvexTest();
+    await t.mutation(api.lib.createSession, {
+      sessionToken: "session-r",
+      refreshToken: "refresh-r",
+      googleSubject: "google|alice",
+      now: NOW,
+    });
+    await t.mutation(api.lib.rotateSession, {
+      sessionToken: "session-r",
+      newSessionToken: "session-r2",
+      now: NOW + 1000,
+    });
+
+    // A racing refresh presenting the retired token is not rotated again;
+    // it is handed the already-current token.
+    const inGrace = NOW + 1000 + SESSION_ROTATION_GRACE_MS - 1;
+    expect(
+      await t.query(api.lib.getActiveSession, {
+        sessionToken: "session-r",
+        now: inGrace,
+      }),
+    ).not.toBeNull();
+    expect(
+      await t.mutation(api.lib.rotateSession, {
+        sessionToken: "session-r",
+        newSessionToken: "session-r3",
+        now: inGrace,
+      }),
+    ).toEqual({ sessionToken: "session-r2" });
+
+    // Past the grace window the retired token is dead; the current one lives.
+    const afterGrace = NOW + 1000 + SESSION_ROTATION_GRACE_MS;
+    expect(
+      await t.query(api.lib.getActiveSession, {
+        sessionToken: "session-r",
+        now: afterGrace,
+      }),
+    ).toBeNull();
+    expect(
+      await t.query(api.lib.getActiveSession, {
+        sessionToken: "session-r2",
+        now: afterGrace,
+      }),
+    ).not.toBeNull();
+  });
+
+  it("refuses and deletes an idle-expired session on rotation", async () => {
     const t = initConvexTest();
     await t.mutation(api.lib.createSession, {
       sessionToken: "session-2",
@@ -205,7 +267,7 @@ describe("session lifetime", () => {
       googleSubject: "google|alice",
       now: NOW,
     });
-    const later = NOW + SESSION_IDLE_TTL_MS + 1;
+    const later = NOW + DEFAULT_SESSION_IDLE_TTL_MS + 1;
     expect(
       await t.query(api.lib.getActiveSession, {
         sessionToken: "session-2",
@@ -213,15 +275,49 @@ describe("session lifetime", () => {
       }),
     ).toBeNull();
     expect(
-      await t.mutation(api.lib.touchSession, {
+      await t.mutation(api.lib.rotateSession, {
         sessionToken: "session-2",
+        newSessionToken: "session-2b",
         now: later,
       }),
-    ).toBe(false);
+    ).toBeNull();
     const sessions = await t.run(
       async (ctx) => await ctx.db.query("authSessions").collect(),
     );
     expect(sessions).toHaveLength(0);
+  });
+
+  it("applies configured TTLs", async () => {
+    const t = initConvexTest();
+    const hour = 60 * 60 * 1000;
+    await t.mutation(api.lib.createSession, {
+      sessionToken: "session-3",
+      refreshToken: "refresh-3",
+      googleSubject: "google|alice",
+      now: NOW,
+      absoluteTtlMs: 2 * hour,
+    });
+    expect(
+      await t.query(api.lib.getActiveSession, {
+        sessionToken: "session-3",
+        now: NOW + hour - 1,
+        idleTtlMs: hour,
+      }),
+    ).not.toBeNull();
+    expect(
+      await t.query(api.lib.getActiveSession, {
+        sessionToken: "session-3",
+        now: NOW + hour,
+        idleTtlMs: hour,
+      }),
+    ).toBeNull();
+    // The absolute deadline stamped at creation wins over a long idle window.
+    expect(
+      await t.query(api.lib.getActiveSession, {
+        sessionToken: "session-3",
+        now: NOW + 2 * hour,
+      }),
+    ).toBeNull();
   });
 
   it("skips expired sessions when reusing a refresh token", async () => {
@@ -230,7 +326,7 @@ describe("session lifetime", () => {
       sessionToken: "old",
       refreshToken: "refresh-old",
       googleSubject: "google|alice",
-      now: NOW - SESSION_ABSOLUTE_TTL_MS - 1,
+      now: NOW - DEFAULT_SESSION_ABSOLUTE_TTL_MS - 1,
     });
     expect(
       await t.query(api.lib.latestRefreshTokenForSubject, {
@@ -259,7 +355,7 @@ describe("session lifetime", () => {
       sessionToken: "stale",
       refreshToken: "r",
       googleSubject: "google|alice",
-      now: NOW - SESSION_ABSOLUTE_TTL_MS - 1,
+      now: NOW - DEFAULT_SESSION_ABSOLUTE_TTL_MS - 1,
     });
     await t.mutation(api.lib.createSession, {
       sessionToken: "live",

@@ -4,10 +4,20 @@
  * every entry point can use it.
  */
 
-/** A session dies this long after it was created, even while in active use. */
-export const SESSION_ABSOLUTE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/**
+ * A session dies this long after it was created, even while in active use.
+ * Google refresh tokens expire after ~6 months of disuse anyway, so a longer
+ * absolute lifetime buys nothing.
+ */
+export const DEFAULT_SESSION_ABSOLUTE_TTL_MS = 180 * 24 * 60 * 60 * 1000;
 /** A session dies after this long without a refresh. */
-export const SESSION_IDLE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const DEFAULT_SESSION_IDLE_TTL_MS = 60 * 24 * 60 * 60 * 1000;
+/**
+ * After a refresh rotates the session token, the retired token stays valid
+ * this long so a concurrent refresh from another tab (which read the old
+ * token from localStorage just before the rotation landed) is not signed out.
+ */
+export const SESSION_ROTATION_GRACE_MS = 60 * 1000;
 
 /**
  * Anonymous claims are 256-bit hex bearer secrets generated client-side.
@@ -22,19 +32,18 @@ export function isValidAnonymousClaim(
 }
 
 export interface SessionLifetime {
-  createdAt: number;
-  expiresAt?: number;
-  lastUsedAt?: number;
+  expiresAt: number;
+  lastUsedAt: number;
 }
 
 export function isSessionExpired(
   session: SessionLifetime,
   now: number,
+  idleTtlMs: number = DEFAULT_SESSION_IDLE_TTL_MS,
 ): boolean {
-  const expiresAt = session.expiresAt ?? session.createdAt + SESSION_ABSOLUTE_TTL_MS;
-  const idleDeadline =
-    (session.lastUsedAt ?? session.createdAt) + SESSION_IDLE_TTL_MS;
-  return now >= expiresAt || now >= idleDeadline;
+  return (
+    now >= session.expiresAt || now >= session.lastUsedAt + idleTtlMs
+  );
 }
 
 const textEncoder = new TextEncoder();
