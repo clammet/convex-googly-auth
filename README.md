@@ -205,6 +205,5 @@ Notes:
 ```bash
 npm install --ignore-scripts   # prepare runs a build; skip on first install
 npm run build                  # or build:codegen with a configured deployment
-npm test
-npm run typecheck && npm run lint
+npm run check
 ```

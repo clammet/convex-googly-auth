@@ -32,6 +32,13 @@ export default [
   },
   pluginJs.configs.recommended,
   ...tseslint.configs.recommended,
+  // Repository tooling - Node.js environment
+  {
+    files: ["scripts/**/*.{js,mjs,cjs}"],
+    languageOptions: {
+      globals: globals.node,
+    },
+  },
   // Convex code - Worker environment
   {
     files: ["src/**/*.{ts,tsx}", "example/convex/**/*.{ts,tsx}"],
