@@ -1,5 +1,5 @@
 {
-  "name": "convex-googly-auth",
+  "name": "@clammet/convex-googly-auth",
   "description": "Google OIDC + optional anonymous identity component for Convex apps.",
   "repository": {
     "type": "git",
@@ -9,8 +9,8 @@
   "bugs": {
     "url": "https://github.com/clammet/convex-googly-auth/issues"
   },
-  "version": "0.1.0",
-  "license": "Apache-2.0",
+  "version": "0.1.1",
+  "license": "Unlicense",
   "keywords": [
     "convex",
     "component",

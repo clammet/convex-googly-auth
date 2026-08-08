@@ -1,6 +1,6 @@
 import { httpRouter } from "convex/server";
 import { components } from "./_generated/api.js";
-import { GooglyAuth } from "convex-googly-auth";
+import { GooglyAuth } from "@clammet/convex-googly-auth";
 
 const http = httpRouter();
 

@@ -38,13 +38,13 @@ anonymous-credential-hijacking bug class fixed structurally, in one place.
 ## Installation
 
 ```bash
-npm install convex-googly-auth
+npm install @clammet/convex-googly-auth
 ```
 
 ```ts
 // convex/convex.config.ts
 import { defineApp } from "convex/server";
-import googlyAuth from "convex-googly-auth/convex.config.js";
+import googlyAuth from "@clammet/convex-googly-auth/convex.config.js";
 
 const app = defineApp();
 app.use(googlyAuth);
@@ -70,7 +70,7 @@ Environment variables on the deployment: `AUTH_GOOGLE_ID`,
 
 ```ts
 // convex/lib/auth.ts — one instance for the whole app
-import { GooglyAuth } from "convex-googly-auth";
+import { GooglyAuth } from "@clammet/convex-googly-auth";
 import { components } from "../_generated/api";
 
 export const googly = new GooglyAuth(components.googlyAuth);
@@ -121,7 +121,7 @@ Optionally add a cron calling `googly.cleanupExpiredSessions(ctx)`.
 
 ```ts
 // src/lib/authClient.ts
-import { createGooglyAuthClient } from "convex-googly-auth/react";
+import { createGooglyAuthClient } from "@clammet/convex-googly-auth/react";
 
 export const authClient = createGooglyAuthClient({
   convexSiteUrl: import.meta.env.VITE_CONVEX_SITE_URL,
@@ -149,7 +149,8 @@ export const authClient = createGooglyAuthClient({
 
 The `example/` directory is a complete working app; run tests with
 `npm test`. Consumers can register the component in their own `convex-test`
-suites via `convex-googly-auth/test` (see `example/convex/setup.test.ts`).
+suites via `@clammet/convex-googly-auth/test` (see
+`example/convex/setup.test.ts`).
 
 ## Migrating upgallery / when onto this component
 
@@ -197,7 +198,7 @@ Notes:
   (auth + env access happen in the app, not the component).
 - `src/react/` — browser client factory.
 - `src/test.ts` — `convex-test` registration helper (exported as
-  `convex-googly-auth/test`).
+  `@clammet/convex-googly-auth/test`).
 - `example/` — working example app + the regression test suite.
 
 ### Development

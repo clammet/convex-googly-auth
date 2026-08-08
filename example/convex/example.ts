@@ -1,7 +1,7 @@
 import { mutation, query } from "./_generated/server.js";
 import { components } from "./_generated/api.js";
 import { v } from "convex/values";
-import { GooglyAuth } from "convex-googly-auth";
+import { GooglyAuth } from "@clammet/convex-googly-auth";
 import type { Doc } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 

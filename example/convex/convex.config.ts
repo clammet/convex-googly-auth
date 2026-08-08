@@ -1,5 +1,5 @@
 import { defineApp } from "convex/server";
-import googlyAuth from "convex-googly-auth/convex.config.js";
+import googlyAuth from "@clammet/convex-googly-auth/convex.config.js";
 
 const app = defineApp();
 app.use(googlyAuth);
