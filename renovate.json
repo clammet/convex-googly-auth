@@ -1,6 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:best-practices"],
+  "extends": ["config:best-practices", "customManagers:githubActionsVersions"],
+  "osvVulnerabilityAlerts": true,
   "timezone": "America/Los_Angeles",
   "packageRules": [
     {
@@ -15,8 +16,19 @@
       "automerge": false
     },
     {
-      "matchDepTypes": ["devDependencies"],
-      "automerge": true
+      "description": "Renovate engine: update weekly and keep the annotated workflow variable as a plain version tag",
+      "matchDepNames": ["ghcr.io/renovatebot/renovate"],
+      "schedule": ["before 6am on monday"],
+      "pinDigests": false
+    },
+    {
+      "description": "Generate release notes and a package version bump for npm dependency updates",
+      "matchManagers": ["npm"],
+      "postUpgradeTasks": {
+        "commands": ["node scripts/create-renovate-changeset.mjs"],
+        "dataFileTemplate": "{{{ toJSON upgrades }}}",
+        "executionMode": "branch"
+      }
     }
   ]
 }

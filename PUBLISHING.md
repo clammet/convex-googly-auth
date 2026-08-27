@@ -27,6 +27,20 @@ No `NPM_TOKEN` GitHub secret is required.
 
 ## Later releases
 
+### Dependency updates
+
+Renovate adds a patch Changeset containing its dependency update summaries.
+After the dependency pull request passes CI and merges, the release workflow
+creates a **Version Packages** pull request, enables auto-merge, and publishes
+the resulting version to npm after CI passes again. GitHub Action-only and
+lockfile-maintenance updates do not publish a package version. The same short
+update summaries are written to `CHANGELOG.md` and the GitHub release.
+
+A major peer-dependency update produces a major package release and still waits
+for a human to merge the original Renovate pull request.
+
+### Other changes
+
 1. For each user-visible change, run:
 
    ```sh

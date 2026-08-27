@@ -33,9 +33,50 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      - name: Identify dependency-only release
+        id: dependency-release
+        shell: bash
+        run: |
+          shopt -s nullglob
+          changesets=(.changeset/*.md)
+          found=false
+          dependency_only=true
+          for changeset in "${changesets[@]}"; do
+            if [ "$(basename "$changeset")" = README.md ]; then
+              continue
+            fi
+            found=true
+            if [[ "$(basename "$changeset")" != renovate-*.md ]]; then
+              dependency_only=false
+            fi
+          done
+          if [ "$found" = true ] && [ "$dependency_only" = true ]; then
+            echo "auto_merge=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "auto_merge=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RENOVATE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+
       - name: Create release PR or publish
+        id: changesets
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          commitMode: github-api
           publish: npm run release
+
+      - name: Automerge dependency release after CI
+        if: >-
+          steps.dependency-release.outputs.auto_merge == 'true' &&
+          steps.changesets.outputs.hasChangesets == 'true' &&
+          steps.changesets.outputs.pullRequestNumber != ''
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_PR: ${{ steps.changesets.outputs.pullRequestNumber }}
+        run: gh pr merge --auto --squash "$RELEASE_PR"

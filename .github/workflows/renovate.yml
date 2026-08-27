@@ -1,0 +1,76 @@
+name: Renovate
+
+# Self-hosted Renovate: run the same engine used by the hosted service in this
+# repository's own Actions. The GitHub App token is used instead of
+# GITHUB_TOKEN so pull requests opened by Renovate still trigger CI.
+# Repository policy lives in renovate.json.
+
+on:
+  schedule:
+    - cron: "47 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      log_level:
+        description: Renovate log level
+        default: info
+        type: choice
+        options: [info, debug]
+
+concurrency:
+  group: renovate
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+env:
+  # Exact Renovate engine pin. Renovate updates this weekly through the
+  # customManagers:githubActionsVersions preset in renovate.json; the
+  # annotation must remain directly above the variable.
+  # renovate: datasource=docker depName=ghcr.io/renovatebot/renovate
+  RENOVATE_VERSION: 44.43.0
+
+jobs:
+  renovate:
+    name: Run Renovate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # GitHub disables scheduled workflows after 60 days without repository
+      # activity. Re-enabling active or inactivity-disabled workflows resets
+      # that clock without touching workflows that were manually disabled.
+      - name: Keep scheduled workflows alive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows" \
+            --jq '.workflows[] | select(.state == "active" or .state == "disabled_inactivity") | .id' \
+          | while read -r id; do
+              gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${id}/enable"
+            done
+
+      # The org-wide app needs Renovate's documented repository permissions,
+      # including write access to workflows so it can update action digests.
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RENOVATE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+
+      - name: Run Renovate
+        uses: renovatebot/github-action@5402b206248e5a8c8427a15102702eb9c1793efc # v46.2.4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          renovate-version: ${{ env.RENOVATE_VERSION }}
+        env:
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          RENOVATE_PLATFORM: github
+          # Permit only the repository-owned release-note generator. Renovate
+          # blocks all post-upgrade commands unless explicitly allow-listed.
+          RENOVATE_CONFIG: >-
+            {"allowedCommands":["^node
+            scripts/create-renovate-changeset\\.mjs$"]}
+          LOG_LEVEL: ${{ inputs.log_level || 'info' }}
