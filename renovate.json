@@ -3,16 +3,28 @@
   "extends": ["config:best-practices", "customManagers:githubActionsVersions"],
   "osvVulnerabilityAlerts": true,
   "timezone": "America/Los_Angeles",
+  "dependencyDashboard": true,
+  "minimumReleaseAge": "3 days",
   "packageRules": [
     {
+      "description": "Supply-chain soak: automerged PRs rebase onto main first so CI ran against the current base",
       "groupName": "Routine updates",
       "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
       "prConcurrentLimit": 1,
-      "automerge": true
+      "automerge": true,
+      "rebaseWhen": "behind-base-branch"
     },
     {
+      "description": "Majors wait for a human and soak a week",
       "groupName": "Major updates",
       "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "minimumReleaseAge": "7 days"
+    },
+    {
+      "description": "Supply-chain soak: never automerge a GitHub Actions digest change. A moved tag on a SHA-pinned action shows up as a digest update; a human compares it against the upstream release first",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["digest", "pinDigest"],
       "automerge": false
     },
     {
