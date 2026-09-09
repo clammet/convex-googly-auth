@@ -1,0 +1,70 @@
+---
+# Generated fleet pattern. Policy and target details: .github/maintenance.json.
+# A vulnerability is a finding; scanner, registry, and API errors fail the run.
+name: Maintenance security scan
+
+on:
+  schedule:
+    - cron: "49 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  statuses: read
+  packages: read
+  actions: write
+  issues: write
+
+concurrency:
+  group: maintenance-security
+  cancel-in-progress: false
+
+env:
+  # renovate: datasource=github-releases depName=aquasecurity/trivy
+  TRIVY_VERSION: v0.74.0
+
+jobs:
+  scan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # The first filesystem scan installs the pinned engine. The controller
+      # performs the configured scans and derives all decisions from JSON.
+      - name: Install Trivy and verify scanner operation
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: fs
+          scan-ref: .github
+          scanners: vuln
+          format: json
+          output: scanner-check.json
+          exit-code: "0"
+
+      - name: Scan and reconcile maintenance findings
+        id: scan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/maintenance.py scan
+
+      - name: Save reports and retry state
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: maintenance-state
+          path: maintenance-results/
+          if-no-files-found: error
+          retention-days: 30

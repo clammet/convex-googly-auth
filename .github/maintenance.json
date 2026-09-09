@@ -1,0 +1,11 @@
+{
+  "workflow": "image-scan.yml",
+  "images": [],
+  "filesystem": true,
+  "ci_workflow": "test.yml",
+  "retry_workflows": [
+    "renovate.yml",
+    "image-scan.yml",
+    "test.yml"
+  ]
+}
