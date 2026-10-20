@@ -1,5 +1,11 @@
 # @clammet/convex-googly-auth
 
+## 1.0.2
+
+### Patch Changes
+
+- c47d2e7: Update dependency vite from 8.2.2 to 8.2.4.
+
 ## 1.0.1
 
 ### Patch Changes
