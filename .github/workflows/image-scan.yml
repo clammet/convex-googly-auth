@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-    - uses: yuzuyuzuyu/repo-automation/actions/security-scan@c097875b7a718223d8a4cc255d130e04dce1ae66 # v1.0.2
+    - uses: yuzuyuzuyu/repo-automation/actions/security-scan@958d784d73d6ba246ccedc7364161b00d2c7ca5f # v1.0.15
       with:
         upload-sarif: 'false'
         rebuild-workflow: ''
