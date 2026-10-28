@@ -1,5 +1,11 @@
 # @clammet/convex-googly-auth
 
+## 1.0.3
+
+### Patch Changes
+
+- 83f1faa: Update dependency @types/node from 24.13.3 to 26.6.5.
+
 ## 1.0.2
 
 ### Patch Changes
